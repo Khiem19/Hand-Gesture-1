@@ -1,47 +1,35 @@
 # ML Hand Gesture Recognition
 
 Python webcam app for live hand gesture recognition using OpenCV, MediaPipe,
-and a classifier trained from your own webcam samples.
+and scikit-learn.
 
-This folder includes a local `.venv` and the MediaPipe hand landmark model at
-`models/hand_landmarker.task` if setup was completed by Codex.
+The app has two clean model tracks:
 
-## How it works
+- Single-hand model: recognizes each hand independently, such as `fist`,
+  `open_palm`, `one_finger`, `peace`, or `thumbs_up`.
+- Two-hand model: recognizes a combined pose made by both hands together, such
+  as `heart_with_two_hands`.
 
-MediaPipe detects 21 hand landmarks. This app converts those landmarks into
-normalized numeric features, then trains a scikit-learn classifier to recognize
-the gesture labels you record.
+MediaPipe detects hand landmarks. This app turns those landmarks into numeric
+features, then trains classifiers from your own webcam samples.
 
-## Setup
+## Run
 
-Create and activate a virtual environment:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-Install dependencies:
+From this folder:
 
 ```powershell
-pip install -r requirements.txt
+cd C:\Local_Testing\Home\1
+.\run_hand_gesture.bat
 ```
 
-If `python` does not work on your machine, try `py` instead:
+Live prediction will use whichever trained models exist:
 
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
+- `models/gesture_classifier.joblib` for single-hand predictions.
+- `models/two_hand_gesture_classifier.joblib` for paired two-hand predictions.
 
-## Collect training samples
+## Single-Hand Gestures
 
-Record each gesture separately. Hold the gesture in front of the camera, press
-`Space` to start recording, move your hand slightly while keeping the same
-gesture, then press `Space` again to pause.
-
-Examples:
+Collect samples one label at a time:
 
 ```powershell
 .\run_hand_gesture.bat --mode collect --label open_palm
@@ -53,54 +41,75 @@ Examples:
 .\run_hand_gesture.bat --mode collect --label thumbs_up
 ```
 
-Aim for at least 80-150 samples per gesture. More variation usually helps:
-slightly different distance, position, and angle.
-
-## Train
+Train the single-hand model:
 
 ```powershell
 .\run_hand_gesture.bat --mode train
 ```
 
-This reads `data/gesture_samples.csv` and saves the classifier to
-`models/gesture_classifier.joblib`.
+Single-hand data is saved to `data/gesture_samples.csv`.
 
-To see what labels you collected and what labels the trained classifier knows:
+## Two-Hand Gestures
+
+Use paired collection for gestures where both hands form one meaning:
+
+```powershell
+.\run_hand_gesture.bat --mode collect-pair --label heart_with_two_hands
+.\run_hand_gesture.bat --mode collect-pair --label two_hands_open
+```
+
+Train the two-hand model:
+
+```powershell
+.\run_hand_gesture.bat --mode train-pair
+```
+
+Two-hand data is saved to `data/two_hand_gesture_samples.csv`.
+
+A paired classifier needs at least two labels. For a heart detector, collect
+`heart_with_two_hands` plus at least one non-heart paired pose such as
+`two_hands_open` or `not_heart`.
+
+## Collection Controls
+
+- Press `Space` to start/pause recording samples.
+- Press `q` or `Esc` to quit.
+- Move your hand or hands slightly while holding the same gesture.
+- Aim for at least `80-150` samples per label.
+
+Single-hand collect mode records one hand. Pair collect mode records only when
+exactly two hands are visible.
+
+## Inspect Dataset
+
+Show collected labels and trained labels:
 
 ```powershell
 .\run_hand_gesture.bat --mode summary
 ```
 
-## Run live prediction
+## Options
 
-Fastest on Windows:
-
-```powershell
-.\run_hand_gesture.bat
-```
-
-Or run the Python file directly:
+Try a different camera:
 
 ```powershell
-python hand_gesture_app.py
+.\run_hand_gesture.bat --camera 1
 ```
 
-Optional camera index:
+Limit prediction to one hand:
 
 ```powershell
-python hand_gesture_app.py --camera 1
+.\run_hand_gesture.bat --max-hands 1
 ```
 
-## Controls
+Lower detection confidence if the camera misses your hands:
 
-- Press `q` or `Esc` to quit.
-- In collect mode, press `Space` to start/pause recording samples.
+```powershell
+.\run_hand_gesture.bat --confidence 0.5
+```
 
 ## Notes
 
-- Good lighting and keeping your hand fully visible improves recognition.
-- The trained classifier is personalized to the gestures you collect.
-- If you want `one_finger`, `three_fingers`, or `four_fingers`, collect samples for those labels and retrain.
-- Use one clear hand facing the camera. Use `--max-hands 2` only if you need two-hand detection.
-- If the camera does not open, close other apps that may be using it, then try `--camera 1`.
+- Good lighting and keeping hands fully visible improves recognition.
+- If you add new labels, retrain the matching model.
 - If `models/hand_landmarker.task` is missing, the app will try to download it automatically.

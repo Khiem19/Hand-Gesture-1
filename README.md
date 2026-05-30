@@ -27,6 +27,15 @@ Live prediction will use whichever trained models exist:
 - `models/gesture_classifier.joblib` for single-hand predictions.
 - `models/two_hand_gesture_classifier.joblib` for paired two-hand predictions.
 
+Show motion/debug details:
+
+```powershell
+.\run_hand_gesture.bat --details
+```
+
+The details overlay shows hand movement direction, speed, pinch distance, and
+two-hand spacing. It also reports simple swipe events.
+
 ## Single-Hand Gestures
 
 Collect samples one label at a time:
@@ -74,6 +83,7 @@ A paired classifier needs at least two labels. For a heart detector, collect
 
 - Press `Space` to start/pause recording samples.
 - Press `q` or `Esc` to quit.
+- In live prediction, press `d` to toggle hand details.
 - Move your hand or hands slightly while holding the same gesture.
 - Aim for at least `80-150` samples per label.
 
@@ -108,8 +118,15 @@ Lower detection confidence if the camera misses your hands:
 .\run_hand_gesture.bat --confidence 0.5
 ```
 
+Start with the hand details overlay enabled:
+
+```powershell
+.\run_hand_gesture.bat --details
+```
+
 ## Notes
 
 - Good lighting and keeping hands fully visible improves recognition.
 - If you add new labels, retrain the matching model.
+- Motion details are diagnostic signals; they do not replace your trained pose models.
 - If `models/hand_landmarker.task` is missing, the app will try to download it automatically.

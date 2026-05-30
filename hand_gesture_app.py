@@ -79,6 +79,16 @@ class HandDetection:
     side: str
 
 
+@dataclass(frozen=True)
+class MotionSignal:
+    side: str
+    speed: float
+    direction: str
+    pinch: float
+    spread: float
+    swipe: str | None
+
+
 class GestureSmoother:
     def __init__(self, window_size: int = 9) -> None:
         self.window: deque[str] = deque(maxlen=window_size)
@@ -90,6 +100,51 @@ class GestureSmoother:
 
         self.window.append(gesture)
         return Counter(self.window).most_common(1)[0][0]
+
+
+class MotionTracker:
+    def __init__(self, history_seconds: float = 0.75, swipe_cooldown: float = 0.75) -> None:
+        self.history_seconds = history_seconds
+        self.swipe_cooldown = swipe_cooldown
+        self.history: dict[str, deque[tuple[float, Point]]] = {}
+        self.last_swipe_at: dict[str, float] = {}
+
+    def update(self, side: str, points: list[Point], timestamp_s: float) -> MotionSignal:
+        center = hand_center(points)
+        history = self.history.setdefault(side, deque())
+        history.append((timestamp_s, center))
+
+        while history and timestamp_s - history[0][0] > self.history_seconds:
+            history.popleft()
+
+        speed = 0.0
+        direction = "Still"
+        swipe = None
+
+        if len(history) >= 2:
+            old_time, old_center = history[0]
+            elapsed = max(timestamp_s - old_time, 0.001)
+            dx = center.x - old_center.x
+            dy = center.y - old_center.y
+            movement = math.hypot(dx, dy)
+            speed = movement / elapsed
+            direction = movement_direction(dx, dy)
+
+            previous_swipe = self.last_swipe_at.get(side, -self.swipe_cooldown)
+            can_swipe = timestamp_s - previous_swipe > self.swipe_cooldown
+            if can_swipe and direction != "Still" and movement > 0.20 and speed > 0.45:
+                swipe = f"Swipe {direction}"
+                self.last_swipe_at[side] = timestamp_s
+
+        scale = hand_scale(points)
+        pinch = distance(points[4], points[8]) / scale
+        spread = distance(points[8], points[20]) / scale
+        return MotionSignal(side, speed, direction, pinch, spread, swipe)
+
+    def clear_missing(self, seen_sides: set[str]) -> None:
+        for side in list(self.history):
+            if side not in seen_sides:
+                del self.history[side]
 
 
 def parse_args() -> argparse.Namespace:
@@ -146,6 +201,11 @@ def parse_args() -> argparse.Namespace:
         default=2,
         help="Maximum number of hands to detect",
     )
+    parser.add_argument(
+        "--details",
+        action="store_true",
+        help="Show hand motion/debug details during live prediction",
+    )
     return parser.parse_args()
 
 
@@ -173,6 +233,27 @@ def distance(a: Point, b: Point) -> float:
     return math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
 
 
+def hand_center(points: list[Point]) -> Point:
+    count = len(points)
+    return Point(
+        sum(point.x for point in points) / count,
+        sum(point.y for point in points) / count,
+        sum(point.z for point in points) / count,
+    )
+
+
+def hand_scale(points: list[Point]) -> float:
+    return max(distance(points[0], points[9]), distance(points[5], points[17]), 0.001)
+
+
+def movement_direction(dx: float, dy: float) -> str:
+    if math.hypot(dx, dy) < 0.035:
+        return "Still"
+    if abs(dx) > abs(dy):
+        return "Right" if dx > 0 else "Left"
+    return "Down" if dy > 0 else "Up"
+
+
 def angle_degrees(a: Point, b: Point, c: Point) -> float:
     ab = np.array([a.x - b.x, a.y - b.y, a.z - b.z], dtype=np.float32)
     cb = np.array([c.x - b.x, c.y - b.y, c.z - b.z], dtype=np.float32)
@@ -195,7 +276,7 @@ def feature_names() -> list[str]:
 
 def extract_features(points: list[Point]) -> list[float]:
     wrist = points[0]
-    scale = max(distance(points[0], points[9]), distance(points[5], points[17]), 0.001)
+    scale = hand_scale(points)
     features: list[float] = []
 
     for point in points:
@@ -671,10 +752,11 @@ def run_predict(args: argparse.Namespace) -> int:
     if args.pair_classifier.exists():
         pair_classifier = load(args.pair_classifier)["model"]
 
-    if single_classifier is None and pair_classifier is None:
+    if single_classifier is None and pair_classifier is None and not args.details:
         print(f"No trained classifier found at {args.classifier}")
         print(f"No trained two-hand classifier found at {args.pair_classifier}")
         print("Collect samples first, then train a single-hand or two-hand classifier.")
+        print("Or run with --details to inspect hand motion without a trained classifier.")
         return 1
 
     capture = open_camera(args.camera, args.width, args.height)
@@ -687,6 +769,8 @@ def run_predict(args: argparse.Namespace) -> int:
         "Right": GestureSmoother(),
     }
     pair_smoother = GestureSmoother()
+    motion_tracker = MotionTracker()
+    show_details = args.details
     start_time = time.perf_counter()
     fps = 0.0
     ticks = cv2.getTickCount()
@@ -700,8 +784,10 @@ def run_predict(args: argparse.Namespace) -> int:
             frame = cv2.flip(frame, 1)
             timestamp_ms = int((time.perf_counter() - start_time) * 1000)
             hands = detect_hands(landmarker, frame, timestamp_ms)
+            timestamp_s = timestamp_ms / 1000.0
 
             predictions: list[tuple[str, str, float]] = []
+            motion_signals: list[MotionSignal] = []
             seen_sides: set[str] = set()
             for idx, hand in enumerate(hands, start=1):
                 side = hand.side
@@ -711,6 +797,8 @@ def run_predict(args: argparse.Namespace) -> int:
                 seen_sides.add(side)
 
                 draw_hand_landmarks(frame, hand.points)
+                signal = motion_tracker.update(side, hand.points, timestamp_s)
+                motion_signals.append(signal)
                 if single_classifier is not None:
                     sample = np.array([extract_features(hand.points)], dtype=np.float32)
                     probabilities = single_classifier.predict_proba(sample)[0]
@@ -724,6 +812,7 @@ def run_predict(args: argparse.Namespace) -> int:
             for side, smoother in smoothers.items():
                 if side not in seen_sides:
                     smoother.update("No Hand")
+            motion_tracker.clear_missing(seen_sides)
 
             pair_prediction: tuple[str, float] | None = None
             if pair_classifier is not None and len(hands) == 2:
@@ -757,7 +846,24 @@ def run_predict(args: argparse.Namespace) -> int:
             elif pair_classifier is not None:
                 lines.append("Two-hand: need exactly 2 hands")
 
-            lines.extend((f"Hands: {len(hands)} | FPS: {fps:.1f}", "q/Esc quit"))
+            swipe_events = [signal.swipe for signal in motion_signals if signal.swipe]
+            if swipe_events:
+                lines.append(f"Motion: {', '.join(swipe_events)}")
+
+            if show_details:
+                for signal in motion_signals:
+                    lines.append(
+                        f"{signal.side} detail: {signal.direction} "
+                        f"speed {signal.speed:.2f} pinch {signal.pinch:.2f}"
+                    )
+                if len(hands) == 2:
+                    left, right = sorted(hands, key=lambda hand: hand.points[0].x)
+                    avg_scale = (hand_scale(left.points) + hand_scale(right.points)) / 2.0
+                    wrist_gap = distance(left.points[0], right.points[0]) / max(avg_scale, 0.001)
+                    index_gap = distance(left.points[8], right.points[8]) / max(avg_scale, 0.001)
+                    lines.append(f"Pair detail: wrists {wrist_gap:.2f} index tips {index_gap:.2f}")
+
+            lines.extend((f"Hands: {len(hands)} | FPS: {fps:.1f}", "d details | q/Esc quit"))
 
             draw_panel(frame, lines)
             cv2.imshow("ML Hand Gesture Recognition", frame)
@@ -765,6 +871,8 @@ def run_predict(args: argparse.Namespace) -> int:
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
+            if key == ord("d"):
+                show_details = not show_details
 
     capture.release()
     cv2.destroyAllWindows()
